@@ -1,0 +1,17 @@
+{
+  "name": "dmbo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Discord Multi-Bot Orchestrator MVP",
+  "workspaces": [
+    "client-js",
+    "sim"
+  ],
+  "scripts": {
+    "build": "cargo build --manifest-path orchestrator/Cargo.toml",
+    "test": "npm --prefix sim test",
+    "acceptance": "npm --prefix sim run acceptance"
+  },
+  "license": "MIT",
+  "type": "module"
+}

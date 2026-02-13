@@ -1,10 +1,12 @@
 {
   "name": "dmbo-sim",
   "version": "0.1.0",
-  "private": true,
+  "description": "DMBO simulator and acceptance harness",
   "type": "module",
   "scripts": {
-    "test": "node --test",
-    "acceptance": "node ./src/run-acceptance.js"
-  }
+    "build:orchestrator": "cargo build --manifest-path ../orchestrator/Cargo.toml --quiet",
+    "test": "npm run build:orchestrator && node --test --test-concurrency=1",
+    "acceptance": "npm run build:orchestrator && node ./src/run-acceptance.js"
+  },
+  "license": "MIT"
 }
