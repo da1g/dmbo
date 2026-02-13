@@ -20,12 +20,19 @@ use std::{
 use tokio::{net::TcpListener, time::sleep};
 
 const REQUEST_TOKEN_LUA: &str = r#"
-local global_key = KEYS[1]
-local route_key = KEYS[2]
+local guard_key = KEYS[1]
+local global_key = KEYS[2]
+local route_key = KEYS[3]
 local global_limit = tonumber(ARGV[1])
 local route_limit = tonumber(ARGV[2])
 local ttl_ms = tonumber(ARGV[3])
 local min_retry_ms = tonumber(ARGV[4])
+
+local guard_ttl = redis.call('PTTL', guard_key)
+if guard_ttl and guard_ttl > 0 then
+  if guard_ttl < min_retry_ms then guard_ttl = min_retry_ms end
+  return {0, guard_ttl, 'invalid_guardrail_active'}
+end
 
 local global_count = redis.call('INCR', global_key)
 if global_count == 1 then redis.call('PEXPIRE', global_key, ttl_ms) end
@@ -53,6 +60,8 @@ struct Config {
     global_rps: u64,
     route_rps: u64,
     min_retry_ms: u64,
+    invalid_threshold: u64,
+    guardrail_cooldown_ms: u64,
     redis_required_for_health: bool,
 }
 
@@ -68,6 +77,8 @@ impl Config {
             global_rps: env_u64("DMBO_GLOBAL_RPS", 50),
             route_rps: env_u64("DMBO_ROUTE_RPS", 5),
             min_retry_ms: env_u64("DMBO_MIN_RETRY_MS", 50),
+            invalid_threshold: env_u64("DMBO_INVALID_THRESHOLD", 8000),
+            guardrail_cooldown_ms: env_u64("DMBO_GUARDRAIL_COOLDOWN_MS", 30000),
             redis_required_for_health: env_bool("DMBO_REDIS_REQUIRED_FOR_HEALTH", true),
         }
     }
@@ -186,6 +197,8 @@ struct ReportResultRequest {
     #[serde(default)]
     #[allow(dead_code)]
     discord_identity: String,
+    #[serde(default = "default_group_id")]
+    group_id: String,
     #[serde(default)]
     #[allow(dead_code)]
     method: String,
@@ -459,6 +472,50 @@ async fn report_result(
             .fetch_add(1, Ordering::Relaxed);
         return (StatusCode::OK, Json(json!({ "ok": false })));
     }
+
+    if counts_toward_invalid_limit(report.status_code, report.x_ratelimit_scope.as_deref()) {
+        let group = normalize_key_part(&report.group_id);
+        let invalid_key = format!("rl:invalid:{group}");
+        let guard_key = format!("rl:guard:{group}");
+
+        let invalid_count: redis::RedisResult<i64> = conn.incr(&invalid_key, 1_i64).await;
+        let invalid_count = match invalid_count {
+            Ok(count) => count,
+            Err(_) => {
+                state
+                    .metrics
+                    .redis_errors_total
+                    .fetch_add(1, Ordering::Relaxed);
+                return (StatusCode::OK, Json(json!({ "ok": false })));
+            }
+        };
+
+        if invalid_count == 1 {
+            let expire_result: redis::RedisResult<()> = conn.expire(&invalid_key, 600).await;
+            if expire_result.is_err() {
+                state
+                    .metrics
+                    .redis_errors_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        if invalid_count as u64 >= state.config.invalid_threshold {
+            let guard_result = redis::cmd("PSETEX")
+                .arg(&guard_key)
+                .arg(state.config.guardrail_cooldown_ms as i64)
+                .arg(invalid_count)
+                .query_async::<_, ()>(&mut conn)
+                .await;
+            if guard_result.is_err() {
+                state
+                    .metrics
+                    .redis_errors_total
+                    .fetch_add(1, Ordering::Relaxed);
+                return (StatusCode::OK, Json(json!({ "ok": false })));
+            }
+        }
+    }
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
 
@@ -493,6 +550,7 @@ impl Drop for InflightGuard {
 async fn issue_permit(state: &Arc<AppState>, request: &RequestTokenRequest) -> PermitDecision {
     let now_ms = unix_ms();
     let second = now_ms / 1000;
+    let guard_key = format!("rl:guard:{}", normalize_key_part(&request.group_id));
     let global_key = format!(
         "rl:global:{}:{second}",
         normalize_key_part(&request.discord_identity)
@@ -524,6 +582,7 @@ async fn issue_permit(state: &Arc<AppState>, request: &RequestTokenRequest) -> P
     let started = Instant::now();
     let result: redis::RedisResult<(i32, i64, String)> = state
         .request_token_script
+        .key(guard_key)
         .key(global_key)
         .key(route_key)
         .arg(state.config.global_rps as i64)
@@ -587,6 +646,14 @@ fn env_bool(key: &str, default: bool) -> bool {
             _ => None,
         })
         .unwrap_or(default)
+}
+
+fn counts_toward_invalid_limit(status_code: u16, scope: Option<&str>) -> bool {
+    match status_code {
+        401 | 403 => true,
+        429 => scope != Some("shared"),
+        _ => false,
+    }
 }
 
 fn default_group_id() -> String {
