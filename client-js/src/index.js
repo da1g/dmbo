@@ -219,4 +219,85 @@ export class DmboClient {
   }
 }
 
+/**
+ * Attaches telemetry listeners to a discord.js REST instance to report
+ * rate limit and invalid request events through a {@link DmboClient}.
+ *
+ * @param {object} rest - The discord.js REST instance to monitor. Must support
+ *   `on` and optionally `off` or `removeListener` for event handling.
+ * @param {DmboClient} dmboClient - The DmboClient instance used to send
+ *   telemetry via {@link DmboClient#reportResult}.
+ * @param {{ discordIdentity?: string, groupId?: string }} [defaults] - Optional
+ *   overrides for the reported `discord_identity` and `group_id` fields. If not
+ *   provided, values are taken from the `dmboClient` instance or fall back to
+ *   sensible defaults.
+ * @returns {() => void} A cleanup function that, when called, removes the
+ *   event listeners that were attached to the `rest` instance.
+ */
+export function attachDiscordJsRestTelemetry(rest, dmboClient, defaults = {}) {
+  if (!rest || typeof rest.on !== "function" || !dmboClient) {
+    return () => {};
+  }
+
+  const listeners = [];
+  const discordIdentity = defaults.discordIdentity ?? dmboClient.discordIdentity ?? "unknown";
+  const groupId = defaults.groupId ?? dmboClient.groupId ?? "homelab-ip";
+
+  // Helper to validate numeric values from discord.js events
+  const parseEventNumber = (value) => {
+    if (value == null) return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const onRateLimited = (data) => {
+    dmboClient.reportResult({
+      request_id: randomUUID(),
+      lease_id: null,
+      discord_identity: discordIdentity,
+      group_id: groupId,
+      method: data?.method ?? "UNKNOWN",
+      route: data?.route ?? "/unknown",
+      major_parameter: String(data?.majorParameter ?? "unknown"),
+      status_code: 429,
+      x_ratelimit_bucket: data?.hash ?? null,
+      x_ratelimit_limit: parseEventNumber(data?.limit),
+      x_ratelimit_remaining: parseEventNumber(data?.remaining),
+      x_ratelimit_reset_after_s:
+        data?.retryAfter != null ? Number(data.retryAfter) / 1000 : null,
+      x_ratelimit_scope: data?.scope ?? null,
+      retry_after_ms: data?.retryAfter ?? null,
+      observed_at_unix_ms: Date.now(),
+    });
+  };
+  rest.on("rateLimited", onRateLimited);
+  listeners.push(["rateLimited", onRateLimited]);
+
+  const onInvalidRequestWarning = (warning) => {
+    dmboClient.reportResult({
+      request_id: randomUUID(),
+      lease_id: null,
+      discord_identity: discordIdentity,
+      group_id: groupId,
+      method: "UNKNOWN",
+      route: warning?.route ?? "/unknown",
+      major_parameter: "unknown",
+      status_code: warning?.statusCode ?? 401,
+      observed_at_unix_ms: Date.now(),
+    });
+  };
+  rest.on("invalidRequestWarning", onInvalidRequestWarning);
+  listeners.push(["invalidRequestWarning", onInvalidRequestWarning]);
+
+  return () => {
+    for (const [event, listener] of listeners) {
+      if (typeof rest.off === "function") {
+        rest.off(event, listener);
+      } else if (typeof rest.removeListener === "function") {
+        rest.removeListener(event, listener);
+      }
+    }
+  };
+}
+
 export { LocalLimiter, normalizeHeaders, parseRetryAfterMs };

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DmboClient, normalizeHeaders, parseRetryAfterMs } from "../src/index.js";
+import { DmboClient, normalizeHeaders, parseRetryAfterMs, attachDiscordJsRestTelemetry } from "../src/index.js";
 
 test("normalizeHeaders - handles Headers object", () => {
   const headers = new Map([
@@ -190,4 +190,314 @@ test("DmboClient - withPermit handles execute errors", async () => {
   assert.ok(reportedPayload);
   assert.equal(reportedPayload.status_code, 500);
   assert.equal(reportedPayload.lease_id, "test-lease");
+});
+
+test("attachDiscordJsRestTelemetry - attaches and cleans up event listeners", () => {
+  const events = new Map();
+  const mockRest = {
+    on: (event, listener) => {
+      if (!events.has(event)) events.set(event, []);
+      events.get(event).push(listener);
+    },
+    off: (event, listener) => {
+      const listeners = events.get(event) || [];
+      const index = listeners.indexOf(listener);
+      if (index > -1) listeners.splice(index, 1);
+    },
+  };
+
+  let reportedPayload = null;
+  const mockClient = {
+    discordIdentity: "test-identity",
+    groupId: "test-group",
+    reportResult: (payload) => {
+      reportedPayload = payload;
+    },
+  };
+
+  const cleanup = attachDiscordJsRestTelemetry(mockRest, mockClient);
+
+  assert.equal(events.get("rateLimited")?.length, 1);
+  assert.equal(events.get("invalidRequestWarning")?.length, 1);
+
+  cleanup();
+
+  assert.equal(events.get("rateLimited")?.length, 0);
+  assert.equal(events.get("invalidRequestWarning")?.length, 0);
+});
+
+test("attachDiscordJsRestTelemetry - transforms rateLimited event data correctly", () => {
+  const mockRest = {
+    on: () => {},
+  };
+
+  let reportedPayload = null;
+  const mockClient = {
+    discordIdentity: "test-identity",
+    groupId: "test-group",
+    reportResult: (payload) => {
+      reportedPayload = payload;
+    },
+  };
+
+  const listeners = [];
+  mockRest.on = (event, listener) => {
+    listeners.push({ event, listener });
+  };
+
+  attachDiscordJsRestTelemetry(mockRest, mockClient);
+
+  const rateLimitListener = listeners.find((l) => l.event === "rateLimited")?.listener;
+  assert.ok(rateLimitListener);
+
+  const rateLimitData = {
+    method: "POST",
+    route: "/channels/123/messages",
+    majorParameter: "123",
+    hash: "abc123",
+    limit: 5,
+    remaining: 2,
+    retryAfter: 2500,
+    scope: "shared",
+  };
+
+  rateLimitListener(rateLimitData);
+
+  assert.ok(reportedPayload);
+  assert.equal(reportedPayload.discord_identity, "test-identity");
+  assert.equal(reportedPayload.group_id, "test-group");
+  assert.equal(reportedPayload.method, "POST");
+  assert.equal(reportedPayload.route, "/channels/123/messages");
+  assert.equal(reportedPayload.major_parameter, "123");
+  assert.equal(reportedPayload.status_code, 429);
+  assert.equal(reportedPayload.x_ratelimit_bucket, "abc123");
+  assert.equal(reportedPayload.x_ratelimit_limit, 5);
+  assert.equal(reportedPayload.x_ratelimit_remaining, 2);
+  assert.equal(reportedPayload.x_ratelimit_reset_after_s, 2.5);
+  assert.equal(reportedPayload.x_ratelimit_scope, "shared");
+  assert.equal(reportedPayload.retry_after_ms, 2500);
+  assert.ok(reportedPayload.request_id);
+  assert.equal(reportedPayload.lease_id, null);
+});
+
+test("attachDiscordJsRestTelemetry - handles missing fields in rateLimited event", () => {
+  const mockRest = {
+    on: () => {},
+  };
+
+  let reportedPayload = null;
+  const mockClient = {
+    discordIdentity: "test-identity",
+    groupId: "test-group",
+    reportResult: (payload) => {
+      reportedPayload = payload;
+    },
+  };
+
+  const listeners = [];
+  mockRest.on = (event, listener) => {
+    listeners.push({ event, listener });
+  };
+
+  attachDiscordJsRestTelemetry(mockRest, mockClient);
+
+  const rateLimitListener = listeners.find((l) => l.event === "rateLimited")?.listener;
+  rateLimitListener({});
+
+  assert.ok(reportedPayload);
+  assert.equal(reportedPayload.method, "UNKNOWN");
+  assert.equal(reportedPayload.route, "/unknown");
+  assert.equal(reportedPayload.major_parameter, "unknown");
+  assert.equal(reportedPayload.x_ratelimit_bucket, null);
+  assert.equal(reportedPayload.x_ratelimit_limit, null);
+  assert.equal(reportedPayload.x_ratelimit_remaining, null);
+  assert.equal(reportedPayload.x_ratelimit_reset_after_s, null);
+  assert.equal(reportedPayload.x_ratelimit_scope, null);
+  assert.equal(reportedPayload.retry_after_ms, null);
+});
+
+test("attachDiscordJsRestTelemetry - validates numeric fields in rateLimited event", () => {
+  const mockRest = {
+    on: () => {},
+  };
+
+  let reportedPayload = null;
+  const mockClient = {
+    reportResult: (payload) => {
+      reportedPayload = payload;
+    },
+  };
+
+  const listeners = [];
+  mockRest.on = (event, listener) => {
+    listeners.push({ event, listener });
+  };
+
+  attachDiscordJsRestTelemetry(mockRest, mockClient);
+
+  const rateLimitListener = listeners.find((l) => l.event === "rateLimited")?.listener;
+  
+  // Test with invalid numeric values
+  rateLimitListener({
+    limit: NaN,
+    remaining: "not-a-number",
+  });
+
+  assert.equal(reportedPayload.x_ratelimit_limit, null);
+  assert.equal(reportedPayload.x_ratelimit_remaining, null);
+
+  // Test with valid numeric values
+  rateLimitListener({
+    limit: 10,
+    remaining: 5,
+  });
+
+  assert.equal(reportedPayload.x_ratelimit_limit, 10);
+  assert.equal(reportedPayload.x_ratelimit_remaining, 5);
+});
+
+test("attachDiscordJsRestTelemetry - transforms invalidRequestWarning event data correctly", () => {
+  const mockRest = {
+    on: () => {},
+  };
+
+  let reportedPayload = null;
+  const mockClient = {
+    discordIdentity: "test-identity",
+    groupId: "test-group",
+    reportResult: (payload) => {
+      reportedPayload = payload;
+    },
+  };
+
+  const listeners = [];
+  mockRest.on = (event, listener) => {
+    listeners.push({ event, listener });
+  };
+
+  attachDiscordJsRestTelemetry(mockRest, mockClient);
+
+  const warningListener = listeners.find((l) => l.event === "invalidRequestWarning")?.listener;
+  assert.ok(warningListener);
+
+  warningListener({
+    route: "/channels/456/messages",
+    statusCode: 403,
+  });
+
+  assert.ok(reportedPayload);
+  assert.equal(reportedPayload.discord_identity, "test-identity");
+  assert.equal(reportedPayload.group_id, "test-group");
+  assert.equal(reportedPayload.method, "UNKNOWN");
+  assert.equal(reportedPayload.route, "/channels/456/messages");
+  assert.equal(reportedPayload.major_parameter, "unknown");
+  assert.equal(reportedPayload.status_code, 403);
+  assert.ok(reportedPayload.request_id);
+  assert.equal(reportedPayload.lease_id, null);
+});
+
+test("attachDiscordJsRestTelemetry - uses default values from dmboClient", () => {
+  const mockRest = {
+    on: () => {},
+  };
+
+  let reportedPayload = null;
+  const mockClient = {
+    discordIdentity: "client-identity",
+    groupId: "client-group",
+    reportResult: (payload) => {
+      reportedPayload = payload;
+    },
+  };
+
+  const listeners = [];
+  mockRest.on = (event, listener) => {
+    listeners.push({ event, listener });
+  };
+
+  attachDiscordJsRestTelemetry(mockRest, mockClient);
+
+  const rateLimitListener = listeners.find((l) => l.event === "rateLimited")?.listener;
+  rateLimitListener({});
+
+  assert.equal(reportedPayload.discord_identity, "client-identity");
+  assert.equal(reportedPayload.group_id, "client-group");
+});
+
+test("attachDiscordJsRestTelemetry - uses custom defaults parameter", () => {
+  const mockRest = {
+    on: () => {},
+  };
+
+  let reportedPayload = null;
+  const mockClient = {
+    discordIdentity: "client-identity",
+    groupId: "client-group",
+    reportResult: (payload) => {
+      reportedPayload = payload;
+    },
+  };
+
+  const listeners = [];
+  mockRest.on = (event, listener) => {
+    listeners.push({ event, listener });
+  };
+
+  attachDiscordJsRestTelemetry(mockRest, mockClient, {
+    discordIdentity: "custom-identity",
+    groupId: "custom-group",
+  });
+
+  const rateLimitListener = listeners.find((l) => l.event === "rateLimited")?.listener;
+  rateLimitListener({});
+
+  assert.equal(reportedPayload.discord_identity, "custom-identity");
+  assert.equal(reportedPayload.group_id, "custom-group");
+});
+
+test("attachDiscordJsRestTelemetry - returns no-op cleanup for invalid rest", () => {
+  const mockClient = {
+    reportResult: () => {},
+  };
+
+  const cleanup1 = attachDiscordJsRestTelemetry(null, mockClient);
+  assert.equal(typeof cleanup1, "function");
+
+  const cleanup2 = attachDiscordJsRestTelemetry({}, mockClient);
+  assert.equal(typeof cleanup2, "function");
+
+  const cleanup3 = attachDiscordJsRestTelemetry({ on: "not-a-function" }, mockClient);
+  assert.equal(typeof cleanup3, "function");
+
+  const cleanup4 = attachDiscordJsRestTelemetry({ on: () => {} }, null);
+  assert.equal(typeof cleanup4, "function");
+});
+
+test("attachDiscordJsRestTelemetry - cleanup works with removeListener fallback", () => {
+  const events = new Map();
+  const mockRest = {
+    on: (event, listener) => {
+      if (!events.has(event)) events.set(event, []);
+      events.get(event).push(listener);
+    },
+    removeListener: (event, listener) => {
+      const listeners = events.get(event) || [];
+      const index = listeners.indexOf(listener);
+      if (index > -1) listeners.splice(index, 1);
+    },
+  };
+
+  const mockClient = {
+    reportResult: () => {},
+  };
+
+  const cleanup = attachDiscordJsRestTelemetry(mockRest, mockClient);
+
+  assert.equal(events.get("rateLimited")?.length, 1);
+  assert.equal(events.get("invalidRequestWarning")?.length, 1);
+
+  cleanup();
+
+  assert.equal(events.get("rateLimited")?.length, 0);
+  assert.equal(events.get("invalidRequestWarning")?.length, 0);
 });
