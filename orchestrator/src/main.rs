@@ -19,6 +19,8 @@ use std::{
 };
 use tokio::{net::TcpListener, time::sleep};
 
+const INVALID_COUNTER_TTL_SECONDS: i64 = 600;
+
 const REQUEST_TOKEN_LUA: &str = r#"
 local guard_key = KEYS[1]
 local global_key = KEYS[2]
@@ -51,6 +53,20 @@ if route_count > route_limit then
 end
 
 return {1, 0, 'ok'}
+"#;
+
+// Lua script to atomically increment a counter and set its expiration.
+// If redis.call fails, the error will be propagated to the caller.
+const INCR_WITH_EXPIRE_LUA: &str = r#"
+local key = KEYS[1]
+local ttl_seconds = tonumber(ARGV[1])
+
+local count = redis.call('INCR', key)
+if count == 1 then
+  redis.call('EXPIRE', key, ttl_seconds)
+end
+
+return count
 "#;
 
 #[derive(Clone)]
@@ -151,6 +167,7 @@ struct AppState {
     config: Config,
     metrics: Metrics,
     request_token_script: Script,
+    incr_with_expire_script: Script,
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +240,7 @@ async fn main() {
         config: config.clone(),
         metrics: Metrics::new(),
         request_token_script: Script::new(REQUEST_TOKEN_LUA),
+        incr_with_expire_script: Script::new(INCR_WITH_EXPIRE_LUA),
     });
 
     let app = Router::new()
@@ -478,7 +496,12 @@ async fn report_result(
         let invalid_key = format!("rl:invalid:{group}");
         let guard_key = format!("rl:guard:{group}");
 
-        let invalid_count: redis::RedisResult<i64> = conn.incr(&invalid_key, 1_i64).await;
+        let invalid_count: redis::RedisResult<i64> = state
+            .incr_with_expire_script
+            .key(&invalid_key)
+            .arg(INVALID_COUNTER_TTL_SECONDS)
+            .invoke_async(&mut conn)
+            .await;
         let invalid_count = match invalid_count {
             Ok(count) => count,
             Err(_) => {
@@ -489,16 +512,6 @@ async fn report_result(
                 return (StatusCode::OK, Json(json!({ "ok": false })));
             }
         };
-
-        if invalid_count == 1 {
-            let expire_result: redis::RedisResult<()> = conn.expire(&invalid_key, 600).await;
-            if expire_result.is_err() {
-                state
-                    .metrics
-                    .redis_errors_total
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-        }
 
         if invalid_count as u64 >= state.config.invalid_threshold {
             let guard_result = redis::cmd("PSETEX")
