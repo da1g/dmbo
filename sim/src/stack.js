@@ -89,7 +89,15 @@ export async function startOrchestrator({ orchestratorPort, redisPort }) {
   });
   orchestrator.stdout.on("data", () => {});
   orchestrator.stderr.on("data", () => {});
-  await waitForHealth(`http://127.0.0.1:${orchestratorPort}/healthz`, 30000);
+
+  const healthPromise = waitForHealth(`http://127.0.0.1:${orchestratorPort}/healthz`, 30000);
+  const errorPromise = once(orchestrator, "error").then(([error]) => {
+    // Convert orchestrator spawn errors into a controlled failure instead of an uncaught exception.
+    const bin = resolveOrchestratorBin();
+    throw new Error(`Failed to start orchestrator process (${bin}): ${error?.message ?? error}`);
+  });
+
+  await Promise.race([healthPromise, errorPromise]);
   return orchestrator;
 }
 
