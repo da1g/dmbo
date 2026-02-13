@@ -95,7 +95,13 @@ export async function startOrchestrator({ orchestratorPort, redisPort }) {
 
 export async function startStack({ redisPort, orchestratorPort }) {
   const redis = await startRedis(redisPort);
-  let orchestrator = await startOrchestrator({ redisPort, orchestratorPort });
+  let orchestrator;
+  try {
+    orchestrator = await startOrchestrator({ redisPort, orchestratorPort });
+  } catch (error) {
+    await stopProcess(redis);
+    throw error;
+  }
 
   return {
     redis,
