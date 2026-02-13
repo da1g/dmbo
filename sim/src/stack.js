@@ -73,7 +73,17 @@ export async function startRedis(redisPort) {
   );
   redis.stdout.on("data", () => {});
   redis.stderr.on("data", () => {});
-  await waitForPort(redisPort, 20000);
+  const portReadyPromise = waitForPort(redisPort, 20000);
+  const errorPromise = once(redis, "error").then(([error]) => {
+    const message =
+      error && typeof error.message === "string"
+        ? error.message
+        : String(error);
+    throw new Error(
+      `Failed to start redis-server on port ${redisPort}: ${message}`,
+    );
+  });
+  await Promise.race([portReadyPromise, errorPromise]);
   return redis;
 }
 
