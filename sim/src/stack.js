@@ -16,12 +16,23 @@ async function waitForPort(port, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
+      let socket;
       await new Promise((resolve, reject) => {
-        const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
+        socket = net.createConnection({ host: "127.0.0.1", port }, () => {
           socket.end();
           resolve();
         });
-        socket.on("error", reject);
+        socket.on("error", (error) => {
+          // Ensure the socket is always cleaned up on error
+          if (socket && !socket.destroyed) {
+            socket.destroy();
+          }
+          reject(error);
+        });
+      }).finally(() => {
+        if (socket && !socket.destroyed) {
+          socket.destroy();
+        }
       });
       return;
     } catch (_error) {
