@@ -1,4 +1,4 @@
-export export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class LocalLimiter {
   constructor({ globalRps = 45, routeRps = 5 } = {}) {

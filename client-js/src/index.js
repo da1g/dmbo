@@ -209,6 +209,14 @@ export class DmboClient {
       observed_at_unix_ms: Date.now(),
     };
   }
+
+  /**
+   * Test helper to expose buildReportPayload for unit testing.
+   * @private
+   */
+  _testBuildReportPayload(request, result, leaseId = null, fallbackReason = null) {
+    return this.#buildReportPayload(request, result, leaseId, fallbackReason);
+  }
 }
 
-export { LocalLimiter };
+export { LocalLimiter, normalizeHeaders, parseRetryAfterMs };
