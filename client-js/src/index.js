@@ -182,4 +182,63 @@ export class DmboClient {
   }
 }
 
+export function attachDiscordJsRestTelemetry(rest, dmboClient, defaults = {}) {
+  if (!rest || typeof rest.on !== "function" || !dmboClient) {
+    return () => {};
+  }
+
+  const listeners = [];
+  const discordIdentity = defaults.discordIdentity ?? dmboClient.discordIdentity ?? "unknown";
+  const groupId = defaults.groupId ?? dmboClient.groupId ?? "homelab-ip";
+
+  const onRateLimited = (data) => {
+    dmboClient.reportResult({
+      request_id: randomUUID(),
+      lease_id: null,
+      discord_identity: discordIdentity,
+      group_id: groupId,
+      method: data?.method ?? "UNKNOWN",
+      route: data?.route ?? "/unknown",
+      major_parameter: String(data?.majorParameter ?? "unknown"),
+      status_code: 429,
+      x_ratelimit_bucket: data?.hash ?? null,
+      x_ratelimit_limit: data?.limit ?? null,
+      x_ratelimit_remaining: data?.remaining ?? 0,
+      x_ratelimit_reset_after_s:
+        data?.retryAfter != null ? Number(data.retryAfter) / 1000 : null,
+      x_ratelimit_scope: data?.scope ?? "user",
+      retry_after_ms: data?.retryAfter ?? null,
+      observed_at_unix_ms: Date.now(),
+    });
+  };
+  rest.on("rateLimited", onRateLimited);
+  listeners.push(["rateLimited", onRateLimited]);
+
+  const onInvalidRequestWarning = (warning) => {
+    dmboClient.reportResult({
+      request_id: randomUUID(),
+      lease_id: null,
+      discord_identity: discordIdentity,
+      group_id: groupId,
+      method: "UNKNOWN",
+      route: warning?.route ?? "/unknown",
+      major_parameter: "unknown",
+      status_code: warning?.statusCode ?? 401,
+      observed_at_unix_ms: Date.now(),
+    });
+  };
+  rest.on("invalidRequestWarning", onInvalidRequestWarning);
+  listeners.push(["invalidRequestWarning", onInvalidRequestWarning]);
+
+  return () => {
+    for (const [event, listener] of listeners) {
+      if (typeof rest.off === "function") {
+        rest.off(event, listener);
+      } else if (typeof rest.removeListener === "function") {
+        rest.removeListener(event, listener);
+      }
+    }
+  };
+}
+
 export { LocalLimiter };
