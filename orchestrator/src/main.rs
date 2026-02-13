@@ -19,6 +19,8 @@ use std::{
 };
 use tokio::{net::TcpListener, time::sleep};
 
+const INVALID_COUNTER_TTL_SECONDS: i64 = 600;
+
 const REQUEST_TOKEN_LUA: &str = r#"
 local guard_key = KEYS[1]
 local global_key = KEYS[2]
@@ -53,6 +55,8 @@ end
 return {1, 0, 'ok'}
 "#;
 
+// Lua script to atomically increment a counter and set its expiration.
+// If redis.call fails, the error will be propagated to the caller.
 const INCR_WITH_EXPIRE_LUA: &str = r#"
 local key = KEYS[1]
 local ttl_seconds = tonumber(ARGV[1])
@@ -495,7 +499,7 @@ async fn report_result(
         let invalid_count: redis::RedisResult<i64> = state
             .incr_with_expire_script
             .key(&invalid_key)
-            .arg(600)
+            .arg(INVALID_COUNTER_TTL_SECONDS)
             .invoke_async(&mut conn)
             .await;
         let invalid_count = match invalid_count {
