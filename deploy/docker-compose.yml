@@ -19,6 +19,7 @@ services:
       DMBO_ROUTE_RPS: 5
       DMBO_INVALID_THRESHOLD: 8000
       DMBO_GUARDRAIL_COOLDOWN_MS: 30000
+      DMBO_MIN_RETRY_MS: 50
     ports:
       - "8787:8787"
     depends_on:

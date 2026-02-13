@@ -30,19 +30,18 @@ npm --prefix sim test
   - `orchestrator_invalid_requests_total{status=*}`
   - `redis_latency_ms*` / `redis_roundtrip_ms*`
   - `redis_errors_total`
-  - `orchestrator_fallback_events_total{reason=*}`
 
 ## Failure modes
 
 ### Orchestrator down
 
 - JS clients automatically fall back to local limiter mode.
-- Expected signal: `orchestrator_fallback_events_total{reason="orchestrator_down"}` increases.
+- Expected behavior: traffic continues using the local limiter even while the orchestrator is unavailable.
 
 ### Redis down
 
 - Orchestrator uses conservative in-memory fallback limiter.
-- Expected signal: `redis_errors_total` and `orchestrator_fallback_events_total{reason="redis_down"}` increase.
+- Expected signal: `redis_errors_total` increases.
 
 ### 429 storm
 
