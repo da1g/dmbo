@@ -1,4 +1,4 @@
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class LocalLimiter {
   constructor({ globalRps = 45, routeRps = 5 } = {}) {
@@ -6,10 +6,12 @@ export class LocalLimiter {
     this.routeRps = Math.max(1, routeRps);
     this.nextAt = new Map();
     this.chains = new Map();
+    this.lastCleanupAt = Date.now();
   }
 
-  async acquire(routeKey) {
-    await this.#acquireKey("global", this.globalRps);
+  async acquire(routeKey, discordIdentity) {
+    const globalKey = discordIdentity ? `global:${discordIdentity}` : "global";
+    await this.#acquireKey(globalKey, this.globalRps);
     await this.#acquireKey(`route:${routeKey}`, this.routeRps);
   }
 
@@ -34,6 +36,22 @@ export class LocalLimiter {
     release();
     if (this.chains.get(key) === current) {
       this.chains.delete(key);
+    }
+
+    // Periodic cleanup of stale entries in nextAt
+    // Clean up entries older than 60 seconds every 30 seconds
+    if (now - this.lastCleanupAt > 30000) {
+      this.#cleanup(now);
+      this.lastCleanupAt = now;
+    }
+  }
+
+  #cleanup(now) {
+    const cutoff = now - 60000; // 60 seconds ago
+    for (const [key, timestamp] of this.nextAt.entries()) {
+      if (timestamp < cutoff && !this.chains.has(key)) {
+        this.nextAt.delete(key);
+      }
     }
   }
 }

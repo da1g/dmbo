@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { LocalLimiter } from "./local-limiter.js";
+import { LocalLimiter, sleep } from "./local-limiter.js";
 
 const DEFAULT_ORCHESTRATOR_URL = "http://127.0.0.1:8787";
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function normalizeHeaders(headers) {
   if (!headers) {
@@ -68,11 +67,15 @@ export class DmboClient {
       request_id: requestMeta.requestId ?? randomUUID(),
     };
 
-    while (true) {
+    const maxRetries = requestMeta.maxRetries ?? 100;
+    let retryCount = 0;
+
+    while (retryCount < maxRetries) {
       const permit = await this.requestToken(permitRequest);
       if (permit.source === "fallback") {
         await this.localLimiter.acquire(
           `${permitRequest.discord_identity}:${permitRequest.method}:${permitRequest.route}:${permitRequest.major_parameter}`,
+          permitRequest.discord_identity,
         );
         this.stats.fallbackPermits += 1;
         this.lastPermitSource = "fallback";
@@ -82,24 +85,49 @@ export class DmboClient {
           atUnixMs: Date.now(),
         });
 
-        const result = await execute();
+        let result;
+        let executeError;
+        try {
+          result = await execute();
+        } catch (error) {
+          executeError = error;
+          result = { statusCode: 500, headers: {} };
+        }
         await this.reportResult(
           this.#buildReportPayload(permitRequest, result, permit.lease_id, permit.reason),
         );
+        if (executeError) {
+          throw executeError;
+        }
         return result;
       }
 
       if (permit.granted) {
         this.stats.orchestratorGrants += 1;
         this.lastPermitSource = "orchestrator";
-        const result = await execute();
+        let result;
+        let executeError;
+        try {
+          result = await execute();
+        } catch (error) {
+          executeError = error;
+          result = { statusCode: 500, headers: {} };
+        }
         await this.reportResult(this.#buildReportPayload(permitRequest, result, permit.lease_id));
+        if (executeError) {
+          throw executeError;
+        }
         return result;
       }
 
       this.stats.orchestratorDenials += 1;
-      await sleep(Math.max(permit.retry_after_ms ?? 50, 10));
+      retryCount += 1;
+      if (retryCount < maxRetries) {
+        await sleep(Math.max(permit.retry_after_ms ?? 50, 10));
+      }
     }
+
+    throw new Error(`Maximum retries (${maxRetries}) exceeded for permit request`);
   }
 
   async requestToken(payload) {
@@ -150,6 +178,13 @@ export class DmboClient {
   #buildReportPayload(request, result, leaseId = null, fallbackReason = null) {
     const statusCode = result?.statusCode ?? result?.status ?? 200;
     const headers = normalizeHeaders(result?.headers);
+    
+    const parseHeaderNumber = (value) => {
+      if (value == null) return null;
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    };
+    
     return {
       request_id: request.request_id,
       lease_id: leaseId,
@@ -160,15 +195,9 @@ export class DmboClient {
       major_parameter: request.major_parameter,
       status_code: statusCode,
       x_ratelimit_bucket: headers["x-ratelimit-bucket"] ?? null,
-      x_ratelimit_limit: headers["x-ratelimit-limit"]
-        ? Number(headers["x-ratelimit-limit"])
-        : null,
-      x_ratelimit_remaining: headers["x-ratelimit-remaining"]
-        ? Number(headers["x-ratelimit-remaining"])
-        : null,
-      x_ratelimit_reset_after_s: headers["x-ratelimit-reset-after"]
-        ? Number(headers["x-ratelimit-reset-after"])
-        : null,
+      x_ratelimit_limit: parseHeaderNumber(headers["x-ratelimit-limit"]),
+      x_ratelimit_remaining: parseHeaderNumber(headers["x-ratelimit-remaining"]),
+      x_ratelimit_reset_after_s: parseHeaderNumber(headers["x-ratelimit-reset-after"]),
       x_ratelimit_scope: headers["x-ratelimit-scope"] ?? null,
       retry_after_ms: parseRetryAfterMs(
         headers,
@@ -179,6 +208,14 @@ export class DmboClient {
       fallback_reason: fallbackReason,
       observed_at_unix_ms: Date.now(),
     };
+  }
+
+  /**
+   * Test helper to expose buildReportPayload for unit testing.
+   * @private
+   */
+  _testBuildReportPayload(request, result, leaseId = null, fallbackReason = null) {
+    return this.#buildReportPayload(request, result, leaseId, fallbackReason);
   }
 }
 
@@ -241,4 +278,4 @@ export function attachDiscordJsRestTelemetry(rest, dmboClient, defaults = {}) {
   };
 }
 
-export { LocalLimiter };
+export { LocalLimiter, normalizeHeaders, parseRetryAfterMs };
