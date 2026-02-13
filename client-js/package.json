@@ -1,0 +1,14 @@
+{
+  "name": "@dmbo/client-js",
+  "version": "0.1.0",
+  "description": "DMBO JavaScript client with orchestrator-down fallback",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
