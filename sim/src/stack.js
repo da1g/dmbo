@@ -106,14 +106,21 @@ export async function startStack({ redisPort, orchestratorPort }) {
     redisPort,
     orchestratorPort,
     restartOrchestrator: async () => {
-      await stopProcess(orchestrator);
-      orchestrator = await startOrchestrator({ redisPort, orchestratorPort });
+      const previousOrchestrator = orchestrator;
+      await stopProcess(previousOrchestrator);
+      try {
+        orchestrator = await startOrchestrator({ redisPort, orchestratorPort });
+      } catch (error) {
+        // Explicitly record that there is currently no running orchestrator.
+        orchestrator = null;
+        throw error;
+      }
     },
     stopOrchestrator: async () => {
       await stopProcess(orchestrator);
     },
     startOrchestrator: async () => {
-      if (orchestrator.exitCode === null) {
+      if (orchestrator && orchestrator.exitCode === null) {
         return;
       }
       orchestrator = await startOrchestrator({ redisPort, orchestratorPort });
