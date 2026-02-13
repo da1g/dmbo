@@ -44,7 +44,7 @@ Requests a permit for attempting a Discord REST call.
 
 ### Semantics
 
-- All times are milliseconds.
+- Time fields are in milliseconds unless otherwise noted; `x_ratelimit_reset_after_s` is in seconds to match Discord's API response headers.
 - `group_id` gates invalid-request guardrail at homelab/IP scope.
 - `discord_identity` gates per-token global and bucket controls.
 - `max_wait_ms > 0` enables server-side waiting before deny.
