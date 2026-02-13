@@ -64,13 +64,17 @@ async function stopProcess(proc, timeoutMs = 4000) {
   }
   proc.kill("SIGINT");
 
-  const exitPromise = once(proc, "exit");
+  const exitPromise = once(proc, "exit").then(() => "exit");
   const timeoutPromise = sleep(timeoutMs).then(() => {
     if (proc.exitCode === null) {
       proc.kill("SIGKILL");
     }
+    return "timeout";
   });
-  await Promise.race([exitPromise, timeoutPromise]);
+  const winner = await Promise.race([exitPromise, timeoutPromise]);
+  if (winner === "timeout") {
+    await exitPromise;
+  }
 }
 
 export async function startRedis(redisPort) {
