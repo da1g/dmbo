@@ -11,3 +11,8 @@ Discord Multi-Bot Orchestrator MVP (Option A) with:
 ```bash
 npm --prefix sim test
 ```
+
+## Planning and operations docs
+
+- Implementation spec: `docs/dmbo-report.md`
+- Runtime runbook: `docs/runbook.md`
