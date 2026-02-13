@@ -1,0 +1,32 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: orchestrator/Dockerfile
+    environment:
+      DMBO_BIND: 0.0.0.0:8787
+      REDIS_URL: redis://redis:6379/
+      DMBO_GLOBAL_RPS: 50
+      DMBO_ROUTE_RPS: 5
+      DMBO_INVALID_THRESHOLD: 8000
+      DMBO_GUARDRAIL_COOLDOWN_MS: 30000
+    ports:
+      - "8787:8787"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
