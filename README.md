@@ -3,7 +3,7 @@
 Discord Multi-Bot Orchestrator MVP (Option A) with:
 
 dev note: if anyone stumbles on this, it was accidentally made public and since it is just a orchestrator, i've decided to keep it public for now. 
-
+it was made for my raspberry pi which has a few personal discord bots running.
 if you have any questions about it, feel free to message me here, or find me on discord @da1g
 
 
