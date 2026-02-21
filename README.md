@@ -1,3 +1,5 @@
+# ⚠️ ARCHIVED / REFERENCE ONLY
+
 # dmbo
 
 Discord Multi-Bot Orchestrator MVP (Option A) with:
